@@ -1,10 +1,19 @@
+const auth = require("./middleware/auth");
+
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 
+// initialize express app FIRST
 const app = express();
+
+// middleware
 app.use(cors());
 app.use(express.json());
+
+// routes (import AFTER app is created)
+const authRoutes = require("./routes/auth");
+app.use("/auth", authRoutes);
 
 // Connect to MongoDB (local or Atlas free tier)
 mongoose.connect("mongodb://127.0.0.1:27017/itsm_demo")
@@ -61,7 +70,10 @@ app.put("/tickets/:id", async (req, res) => {
 });
 
 // Delete Ticket
-app.delete("/tickets/:id", async (req, res) => {
+app.delete("/tickets/:id", auth, async (req, res) => {
+  if (req.user.role !== "Admin") {
+    return res.status(403).json({ error: "Only Admins can delete tickets" });
+  }
   try {
     await Ticket.findByIdAndDelete(req.params.id);
     res.json({ message: "Ticket deleted successfully" });
@@ -70,6 +82,7 @@ app.delete("/tickets/:id", async (req, res) => {
   }
 });
 
+
 // Start Server
 const PORT = 5000;
-app.listen(PORT, () => console.log(`ITSM backend running on port ${PORT}`));
+app.listen(PORT, "0.0.0.0", () => console.log(`ITSM backend running on port ${PORT}`));
