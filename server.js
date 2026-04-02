@@ -1,8 +1,12 @@
-const auth = require("./middleware/auth");
-
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
+
+// middleware & utilities
+const auth = require("./middleware/auth");
+const sendNotification = require("./utils/mailer");
+const ExcelJS = require("exceljs");
+const PDFDocument = require("pdfkit");
 
 // initialize express app FIRST
 const app = express();
@@ -55,7 +59,7 @@ app.get("/tickets", async (req, res) => {
 });
 
 // Update Ticket
-app.put("/tickets/:id", async (req, res) => {
+app.put("/tickets/:id", auth, async (req, res) => {
   try {
     const { status, assignedTo, priority } = req.body;
     const ticket = await Ticket.findByIdAndUpdate(
@@ -63,6 +67,16 @@ app.put("/tickets/:id", async (req, res) => {
       { status, assignedTo, priority },
       { new: true }
     );
+
+    // Send notification when ticket is resolved
+    if (status === "Resolved" && assignedTo) {
+      await sendNotification(
+        `${assignedTo}@example.com`,
+        "Ticket Resolved",
+        `Ticket "${ticket.title}" has been resolved.`
+      );
+    }
+
     res.json(ticket);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -82,6 +96,110 @@ app.delete("/tickets/:id", auth, async (req, res) => {
   }
 });
 
+// Weekly Report Route
+app.get("/reports/weekly", auth, async (req, res) => {
+  try {
+    const today = new Date();
+
+    // Calculate start (Sunday) and end (Saturday) of current week
+    const startOfWeek = new Date(today);
+    startOfWeek.setDate(today.getDate() - today.getDay());
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+
+    // Format dates as DD/MM/YYYY
+    const formatDate = (date) =>
+      `${date.getDate()}/${date.getMonth() + 1}/${date.getFullYear()}`;
+
+    const weekRange = `${formatDate(startOfWeek)} - ${formatDate(endOfWeek)}`;
+
+    // Aggregate tickets
+    const statusSummary = await Ticket.aggregate([
+      { $group: { _id: "$status", count: { $sum: 1 } } }
+    ]);
+
+    const prioritySummary = await Ticket.aggregate([
+      { $group: { _id: "$priority", count: { $sum: 1 } } }
+    ]);
+
+    const totalTickets = await Ticket.countDocuments();
+
+    res.json({
+      week: weekRange,
+      totalTickets,
+      statusSummary,
+      prioritySummary
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Excel report generation
+app.get("/reports/weekly/excel", auth, async (req, res) => {
+  try {
+    const tickets = await Ticket.find();
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Weekly Report");
+
+    worksheet.columns = [
+      { header: "Title", key: "title", width: 30 },
+      { header: "Status", key: "status", width: 15 },
+      { header: "Priority", key: "priority", width: 15 },
+      { header: "Assigned To", key: "assignedTo", width: 20 },
+      { header: "Created At", key: "createdAt", width: 20 }
+    ];
+
+    tickets.forEach(ticket => {
+      worksheet.addRow({
+        title: ticket.title,
+        status: ticket.status,
+        priority: ticket.priority,
+        assignedTo: ticket.assignedTo,
+        createdAt: ticket.createdAt
+      });
+    });
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader("Content-Disposition", "attachment; filename=weekly-report.xlsx");
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PDF report generation
+app.get("/reports/weekly/pdf", auth, async (req, res) => {
+  try {
+    const tickets = await Ticket.find();
+
+    const doc = new PDFDocument();
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", "attachment; filename=weekly-report.pdf");
+
+    doc.pipe(res);
+
+    doc.fontSize(18).text("Weekly Ticket Report", { align: "center" });
+    doc.moveDown();
+
+    tickets.forEach(ticket => {
+      doc.fontSize(12).text(
+        `Title: ${ticket.title} | Status: ${ticket.status} | Priority: ${ticket.priority} | Assigned To: ${ticket.assignedTo} | Created At: ${ticket.createdAt}`
+      );
+      doc.moveDown();
+    });
+
+    doc.end();
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Start Server
 const PORT = 5000;
